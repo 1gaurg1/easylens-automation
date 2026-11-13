@@ -35,10 +35,10 @@ load_dotenv(Path(__file__).parent / ".env")  # picks up ANTHROPIC_API_KEY
 
 # --- Config -----------------------------------------------------------------
 
-EASY_LENS_URL = "https://www.snapchat.com/lens-studio/easy-lens"  # adjust to the real URL
+EASY_LENS_URL = "https://easylens.snapchat.com"
 PROFILE_DIR = Path(__file__).parent / ".browser-profile"  # persistent login lives here
 LOG_FILE = Path(__file__).parent / "runs.jsonl"
-MODEL = "claude-opus-5-5"
+MODEL = "claude-haiku-5-5"
 
 # Selectors: inspect the page and update these. Prefer roles/placeholders over
 # CSS classes, which change often.
@@ -74,9 +74,6 @@ def generate_prompts(client: anthropic.Anthropic, theme: str, count: int) -> lis
         system=SYSTEM,
         messages=[{"role": "user", "content": f"Write {count} Easy Lens prompts on the theme: {theme}"}],
         output_format=LensPrompts,
-        # Server-side fallback if the model declines; harmless otherwise.
-        extra_headers={"anthropic-beta": "server-side-fallback-2026-07-01"},
-        extra_body={"fallbacks": "default"},
     )
     if response.stop_reason == "refusal":
         raise RuntimeError(f"Claude declined: {response.stop_details}")
@@ -166,7 +163,8 @@ def main() -> None:
             str(PROFILE_DIR),
             headless=False,
             args=launch_args(args.camera_image),
-            permissions=["camera"] if args.camera_image else [],
+            # Snap asks for camera AND mic together; with a fake camera, the mic is fake too.
+            permissions=["camera", "microphone"] if args.camera_image else [],
         )
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
         page.goto(EASY_LENS_URL)
