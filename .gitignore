@@ -22,3 +22,6 @@ venv/
 
 # Generated fake-webcam video
 .camera.y4m
+
+# Personal photos used as the fake webcam
+face.jpg
