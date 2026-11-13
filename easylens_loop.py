@@ -1,0 +1,162 @@
+"""
+Easy Lens prompt loop: Claude generates AR lens prompts, Playwright types them
+into the Easy Lens web UI in your own logged-in browser session.
+
+Deliberately NOT included: stealth plugins, fingerprint spoofing, CAPTCHA
+solving, or any attempt to evade Snap's rate limits / bot detection. The
+script runs headed, at a slow human pace, and pauses for you if Snap shows
+a challenge or throttles you. Automating Snap's UI may still be against
+their Terms of Service - use a secondary account and keep volumes low.
+
+Setup:
+    pip install -r requirements.txt
+    playwright install chromium
+    export ANTHROPIC_API_KEY=...
+
+Run:
+    python easylens_loop.py --theme "retro 80s arcade" --count 5
+    (first run: log in manually in the opened window, then press Enter)
+"""
+
+import argparse
+import json
+import random
+import time
+from pathlib import Path
+
+import anthropic
+from playwright.sync_api import Page, TimeoutError as PWTimeout, sync_playwright
+from pydantic import BaseModel
+
+# --- Config -----------------------------------------------------------------
+
+EASY_LENS_URL = "https://www.snapchat.com/lens-studio/easy-lens"  # adjust to the real URL
+PROFILE_DIR = Path(__file__).parent / ".browser-profile"  # persistent login lives here
+LOG_FILE = Path(__file__).parent / "runs.jsonl"
+MODEL = "claude-opus-5-5"
+
+# Selectors: inspect the page and update these. Prefer roles/placeholders over
+# CSS classes, which change often.
+PROMPT_INPUT = "textarea"                                    # e.g. 'textarea[placeholder*="Describe"]'
+SUBMIT_BUTTON = "role=button[name=/generate|create|send/i]"
+DONE_SIGNAL = "role=button[name=/publish|save/i]"            # element that appears when generation finishes
+CHALLENGE_SIGNALS = ["iframe[src*='captcha']", "text=/verify you are human/i", "text=/too many requests/i"]
+
+MIN_DELAY_S, MAX_DELAY_S = 60, 120   # be conservative; you're on someone else's service
+GENERATION_TIMEOUT_MS = 5 * 60_000
+MAX_CONSECUTIVE_FAILURES = 3
+
+# --- Claude: prompt generation ---------------------------------------------
+
+
+class LensPrompts(BaseModel):
+    prompts: list[str]
+
+
+SYSTEM = (
+    "You write prompts for Snapchat Easy Lens, a tool that turns a short natural-"
+    "language description into an AR face/world lens. Each prompt should be one or "
+    "two sentences, concrete and visual (what appears, where on the face or scene, "
+    "colors, motion, style). Keep them distinct from each other and family-friendly."
+)
+
+
+def generate_prompts(client: anthropic.Anthropic, theme: str, count: int) -> list[str]:
+    response = client.messages.parse(
+        model=MODEL,
+        max_tokens=16000,
+        output_config={"effort": "low"},
+        system=SYSTEM,
+        messages=[{"role": "user", "content": f"Write {count} Easy Lens prompts on the theme: {theme}"}],
+        output_format=LensPrompts,
+        # Server-side fallback if the model declines; harmless otherwise.
+        extra_headers={"anthropic-beta": "server-side-fallback-2026-07-01"},
+        extra_body={"fallbacks": "default"},
+    )
+    if response.stop_reason == "refusal":
+        raise RuntimeError(f"Claude declined: {response.stop_details}")
+    return response.parsed_output.prompts[:count]
+
+
+# --- Browser automation -----------------------------------------------------
+
+
+def challenge_present(page: Page) -> bool:
+    return any(page.locator(sel).count() > 0 for sel in CHALLENGE_SIGNALS)
+
+
+def wait_for_human_if_challenged(page: Page) -> None:
+    """If Snap shows a CAPTCHA / rate-limit page, stop and let the human handle it."""
+    if challenge_present(page):
+        print("\n[!] Snap is showing a verification or rate-limit page.")
+        print("    Resolve it yourself in the browser (or wait it out), then press Enter.")
+        print("    If this keeps happening, lower --count or raise the delays.")
+        input()
+
+
+def submit_prompt(page: Page, prompt: str) -> bool:
+    wait_for_human_if_challenged(page)
+
+    box = page.locator(PROMPT_INPUT).first
+    box.wait_for(state="visible", timeout=30_000)
+    box.click()
+    box.fill("")
+    box.type(prompt, delay=random.randint(30, 80))  # readable pace, easy to watch
+    page.locator(SUBMIT_BUTTON).first.click()
+
+    try:
+        page.locator(DONE_SIGNAL).first.wait_for(state="visible", timeout=GENERATION_TIMEOUT_MS)
+        return True
+    except PWTimeout:
+        wait_for_human_if_challenged(page)
+        return False
+
+
+def log_result(prompt: str, ok: bool) -> None:
+    with LOG_FILE.open("a") as f:
+        f.write(json.dumps({"ts": time.time(), "prompt": prompt, "ok": ok}) + "\n")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--theme", required=True)
+    parser.add_argument("--count", type=int, default=5)
+    parser.add_argument("--dry-run", action="store_true", help="only print generated prompts")
+    args = parser.parse_args()
+
+    prompts = generate_prompts(anthropic.Anthropic(), args.theme, args.count)
+    for i, p in enumerate(prompts, 1):
+        print(f"{i}. {p}")
+    if args.dry_run:
+        return
+
+    with sync_playwright() as pw:
+        ctx = pw.chromium.launch_persistent_context(str(PROFILE_DIR), headless=False)
+        page = ctx.pages[0] if ctx.pages else ctx.new_page()
+        page.goto(EASY_LENS_URL)
+        input("\nLog in if needed and open the Easy Lens editor, then press Enter to start...")
+
+        failures = 0
+        for i, prompt in enumerate(prompts, 1):
+            print(f"\n[{i}/{len(prompts)}] {prompt}")
+            ok = submit_prompt(page, prompt)
+            log_result(prompt, ok)
+            print("  done" if ok else "  timed out")
+
+            failures = 0 if ok else failures + 1
+            if failures >= MAX_CONSECUTIVE_FAILURES:
+                print("Too many failures in a row; stopping.")
+                break
+
+            if i < len(prompts):
+                # Before the next prompt, save/publish the lens yourself if you want to keep it.
+                delay = random.uniform(MIN_DELAY_S, MAX_DELAY_S)
+                print(f"  waiting {delay:.0f}s")
+                time.sleep(delay)
+
+        input("\nFinished. Press Enter to close the browser...")
+        ctx.close()
+
+
+if __name__ == "__main__":
+    main()
