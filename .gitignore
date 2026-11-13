@@ -19,3 +19,6 @@ venv/
 .vscode/
 .idea/
 .DS_Store
+
+# Generated fake-webcam video
+.camera.y4m

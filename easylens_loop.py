@@ -10,11 +10,12 @@ their Terms of Service - use a secondary account and keep volumes low.
 
 Setup:
     pip install -r requirements.txt
-    playwright install firefox
+    playwright install chromium
     put ANTHROPIC_API_KEY in .env
 
 Run:
     python easylens_loop.py --theme "retro 80s arcade" --count 5
+    python easylens_loop.py --theme "..." --camera-image face.jpg   # still image as webcam
     (first run: log in manually in the opened window, then press Enter)
 """
 
@@ -27,6 +28,7 @@ from pathlib import Path
 import anthropic
 from dotenv import load_dotenv
 from playwright.sync_api import Page, TimeoutError as PWTimeout, sync_playwright
+from PIL import Image
 from pydantic import BaseModel
 
 load_dotenv(Path(__file__).parent / ".env")  # picks up ANTHROPIC_API_KEY
@@ -84,6 +86,31 @@ def generate_prompts(client: anthropic.Anthropic, theme: str, count: int) -> lis
 # --- Browser automation -----------------------------------------------------
 
 
+def image_to_y4m(image_path: Path, out_path: Path, max_width: int = 1280) -> Path:
+    """Convert a still image into a one-frame Y4M video, the format Chromium's
+    fake webcam (--use-file-for-fake-video-capture) reads. Chromium loops it."""
+    img = Image.open(image_path).convert("RGB")
+    if img.width > max_width:
+        img = img.resize((max_width, round(img.height * max_width / img.width)))
+    img = img.crop((0, 0, img.width - img.width % 2, img.height - img.height % 2))  # 4:2:0 needs even dims
+    y, cb, cr = img.convert("YCbCr").split()
+    half = (img.width // 2, img.height // 2)
+    with out_path.open("wb") as f:
+        f.write(f"YUV4MPEG2 W{img.width} H{img.height} F30:1 Ip A1:1 C420jpeg\n".encode())
+        f.write(b"FRAME\n" + y.tobytes() + cb.resize(half).tobytes() + cr.resize(half).tobytes())
+    return out_path
+
+
+def launch_args(camera_image: Path | None) -> list[str]:
+    if camera_image is None:
+        return []
+    y4m = image_to_y4m(camera_image, Path(__file__).parent / ".camera.y4m")
+    return [
+        "--use-fake-device-for-media-stream",
+        f"--use-file-for-fake-video-capture={y4m}",
+    ]
+
+
 def challenge_present(page: Page) -> bool:
     return any(page.locator(sel).count() > 0 for sel in CHALLENGE_SIGNALS)
 
@@ -125,6 +152,7 @@ def main() -> None:
     parser.add_argument("--theme", required=True)
     parser.add_argument("--count", type=int, default=5)
     parser.add_argument("--dry-run", action="store_true", help="only print generated prompts")
+    parser.add_argument("--camera-image", type=Path, help="still image to use as the webcam for lens previews")
     args = parser.parse_args()
 
     prompts = generate_prompts(anthropic.Anthropic(), args.theme, args.count)
@@ -134,7 +162,12 @@ def main() -> None:
         return
 
     with sync_playwright() as pw:
-        ctx = pw.firefox.launch_persistent_context(str(PROFILE_DIR), headless=False)
+        ctx = pw.chromium.launch_persistent_context(
+            str(PROFILE_DIR),
+            headless=False,
+            args=launch_args(args.camera_image),
+            permissions=["camera"] if args.camera_image else [],
+        )
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
         page.goto(EASY_LENS_URL)
         input("\nLog in if needed and open the Easy Lens editor, then press Enter to start...")
