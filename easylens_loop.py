@@ -10,8 +10,8 @@ their Terms of Service - use a secondary account and keep volumes low.
 
 Setup:
     pip install -r requirements.txt
-    playwright install chromium
-    export ANTHROPIC_API_KEY=...
+    playwright install firefox
+    put ANTHROPIC_API_KEY in .env
 
 Run:
     python easylens_loop.py --theme "retro 80s arcade" --count 5
@@ -25,8 +25,11 @@ import time
 from pathlib import Path
 
 import anthropic
+from dotenv import load_dotenv
 from playwright.sync_api import Page, TimeoutError as PWTimeout, sync_playwright
 from pydantic import BaseModel
+
+load_dotenv(Path(__file__).parent / ".env")  # picks up ANTHROPIC_API_KEY
 
 # --- Config -----------------------------------------------------------------
 
@@ -131,7 +134,7 @@ def main() -> None:
         return
 
     with sync_playwright() as pw:
-        ctx = pw.chromium.launch_persistent_context(str(PROFILE_DIR), headless=False)
+        ctx = pw.firefox.launch_persistent_context(str(PROFILE_DIR), headless=False)
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
         page.goto(EASY_LENS_URL)
         input("\nLog in if needed and open the Easy Lens editor, then press Enter to start...")

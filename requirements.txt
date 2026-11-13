@@ -1,3 +1,4 @@
 anthropic
 playwright
 pydantic
+python-dotenv

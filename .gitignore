@@ -1,0 +1,21 @@
+# Secrets (ANTHROPIC_API_KEY etc.)
+.env
+.env.*
+!.env.example
+
+# Playwright persistent profile - holds your logged-in Snapchat cookies
+.browser-profile/
+
+# Run logs
+runs.jsonl
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
